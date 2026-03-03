@@ -1,0 +1,9 @@
+Options -Indexes
+RewriteEngine On
+
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^api/(.+)$ api/index.php?path=$1 [QSA,L]
+RewriteRule ^api/?$ api/index.php [QSA,L]
+RewriteRule ^widget/?$ widget/index.php [QSA,L]
+RewriteRule ^admin/?$ admin/index.php [QSA,L]
