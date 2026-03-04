@@ -20,10 +20,10 @@ define('DB_USE_SQLITE', false);
 // ============================================================
 // CONFIGURAÇÕES MySQL (usado quando DB_USE_SQLITE = false)
 // ============================================================
-define('DB_HOST', getenv('DB_HOST') ?: 'sql.freedb.tech');
-define('DB_NAME', getenv('DB_NAME') ?: 'freedb_socialproof');
-define('DB_USER', getenv('DB_USER') ?: 'freedb_socialproof');
-define('DB_PASS', getenv('DB_PASS') ?: 'S2Fhy@6*DQ@?t%6');
+define('DB_HOST', getenv('DB_HOST') ?: '91j0qi.h.filess.io');
+define('DB_NAME', getenv('DB_NAME') ?: 'Db_SocialProof_partlygone');
+define('DB_USER', getenv('DB_USER') ?: 'Db_SocialProof_partlygone');
+define('DB_PASS', getenv('DB_PASS') ?: '3d1c730e00a2e917943ab2f1d6814a2b2d75cd4a');
 
 // ============================================================
 // CONFIGURAÇÕES SQLite (usado quando DB_USE_SQLITE = true)
@@ -58,7 +58,7 @@ class DB {
 
                 } else {
                     self::$instance = new PDO(
-                        'mysql:host=' . DB_HOST . ';dbname=' . DB_NAME . ';charset=utf8mb4',
+                        'mysql:host=' . DB_HOST . ';port=61032;dbname=' . DB_NAME . ';charset=utf8mb4',
                         DB_USER,
                         DB_PASS,
                         [
