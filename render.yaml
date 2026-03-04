@@ -4,6 +4,3 @@ services:
     runtime: docker
     plan: free
     dockerfilePath: ./Dockerfile
-    envVars:
-      - key: DB_USE_SQLITE
-        value: "true"

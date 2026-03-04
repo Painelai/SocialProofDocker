@@ -20,10 +20,10 @@ define('DB_USE_SQLITE', false);
 // ============================================================
 // CONFIGURAÇÕES MySQL (usado quando DB_USE_SQLITE = false)
 // ============================================================
-define('DB_HOST', getenv('DB_HOST') ?: 'sql.freedb.tech');
-define('DB_NAME', getenv('DB_NAME') ?: 'freedb_socialproof');
-define('DB_USER', getenv('DB_USER') ?: 'freedb_socialproof');
-define('DB_PASS', getenv('DB_PASS') ?: 'S2Fhy@6*DQ@?t%6');
+define('DB_HOST', getenv('DB_HOST') ?: 'localhost');
+define('DB_NAME', getenv('DB_NAME') ?: 'socialproof3');
+define('DB_USER', getenv('DB_USER') ?: 'root');
+define('DB_PASS', getenv('DB_PASS') ?: '');
 
 // ============================================================
 // CONFIGURAÇÕES SQLite (usado quando DB_USE_SQLITE = true)
