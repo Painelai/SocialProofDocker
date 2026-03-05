@@ -220,6 +220,15 @@
   .reply-ref .reply-name { color: var(--accent); font-weight: 700; font-size: 10.5px; margin-bottom: 1px; }
   .reply-ref .reply-text { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
 
+  /* Efeito de destaque ao navegar para mensagem citada */
+  @keyframes msgPulse {
+    0%   { background: transparent; }
+    20%  { background: rgba(245,166,35,0.18); box-shadow: 0 0 0 2px rgba(245,166,35,0.35); border-radius: 12px; }
+    60%  { background: rgba(245,166,35,0.10); box-shadow: 0 0 0 2px rgba(245,166,35,0.18); border-radius: 12px; }
+    100% { background: transparent; box-shadow: none; }
+  }
+  .msg-highlight { animation: msgPulse 1.2s ease forwards; }
+
   .fwd-label { display:flex; align-items:center; gap:4px; font-size:10px; color:var(--muted); margin-bottom:4px; font-style:italic; }
 
   .bubble-img { max-width:240px; max-height:200px; border-radius:10px; display:block; margin-bottom:4px; cursor:pointer; object-fit:cover; width:100%; }
@@ -267,6 +276,28 @@
   @keyframes recBar { 0%,100%{transform:scaleY(1);} 50%{transform:scaleY(0.4);} }
 
   /* SCROLL BTN */
+  /* Loader histórico anterior */
+  #historyLoader {
+    text-align:center;
+    padding:10px 0 4px;
+    color:var(--text-muted, #888);
+    font-size:12px;
+    cursor:pointer;
+    user-select:none;
+    display:none;
+  }
+  #historyLoader:hover { color:var(--text); }
+  #historyLoader .hist-spinner {
+    display:none;
+    width:14px; height:14px;
+    border:2px solid rgba(255,255,255,0.15);
+    border-top-color:#888;
+    border-radius:50%;
+    animation:spin 0.7s linear infinite;
+    margin:0 auto 4px;
+  }
+  @keyframes spin { to { transform:rotate(360deg); } }
+
   #scrollBtn {
     position:absolute; bottom:70px; right:14px;
     background:var(--surface2); color:var(--text); border:1px solid var(--border);
@@ -392,6 +423,7 @@
       <div class="header-sub" id="roomSub">Comunidade ao Vivo</div>
     </div>
     <div class="online-count-badge" id="onlineCount">• • •</div>
+    <button onclick="fetchMessages()" style="background:none;border:none;cursor:pointer;font-size:16px;padding:4px 6px;color:var(--online);opacity:0.8" title="Atualizar chat">🔄</button>
     <button class="menu-btn" id="menuBtn" onclick="toggleMenu(event)">⋮</button>
   </div>
 
@@ -403,6 +435,11 @@
   </div>
 
   <!-- FEED -->
+  <div id="historyLoader" onclick="loadHistory()">
+    <div class="hist-spinner" id="histSpinner"></div>
+    <span id="histText">↑ Carregar mensagens anteriores</span>
+  </div>
+
   <div id="feed">
     <div id="loading">
       <div class="loading-spinner"></div>
@@ -479,15 +516,142 @@
 const params   = new URLSearchParams(location.search);
 const ROOM     = params.get('room') || 'default';
 const _wbase   = window.location.pathname.replace(/\/widget(\/index\.php)?$/, '').replace(/\/+$/, '');
-const API_BASE = params.get('api') || (window.location.origin + (_wbase || '') + '/api');
-const POLL_MS  = 6000;
+// Suporte a servidores sem mod_rewrite
+const _apiRaw = params.get('api') || (window.location.origin + (_wbase || '') + '/api');
+const API_BASE = _apiRaw.endsWith('/api') ? _apiRaw.replace(/\/api$/, '/api/index.php?path=') : _apiRaw;
+
+// Helper para montar URL compatível
+function apiUrl(path) {
+  if (API_BASE.includes('index.php?path=')) {
+    const parts = path.split('?');
+    return API_BASE + parts[0] + (parts[1] ? '&' + parts[1] : '');
+  }
+  return API_BASE + '/' + path;
+}
+const POLL_MS       = 6000;  // polling normal
+const POLL_FAST_MS  = 800;   // polling acelerado durante disparo em massa
 const REACT_POLL_MS = 15000;
+
+// Polling adaptativo — acelera quando detecta muitas mensagens chegando
+let _pollTimer      = null;
+let _fastModeCount  = 0; // quantas rodadas consecutivas vieram com muitas msgs
+
+function schedulePoll(fast) {
+  clearTimeout(_pollTimer);
+  _pollTimer = setTimeout(async function() {
+    const before = lastId;
+    await fetchMessages();
+    const newMsgs = lastId - before;
+    if (newMsgs >= 3) {
+      // Muitas mensagens chegando — mantém modo rápido
+      _fastModeCount = Math.min(_fastModeCount + 1, 20);
+      schedulePoll(true);
+    } else if (_fastModeCount > 0) {
+      // Ainda em modo rápido mas diminuindo
+      _fastModeCount--;
+      schedulePoll(_fastModeCount > 0);
+    } else {
+      schedulePoll(false);
+    }
+  }, fast ? POLL_FAST_MS : POLL_MS);
+}
 
 // Visitor fingerprint
 let visitorFp = sessionStorage.getItem('_spfp');
 if (!visitorFp) {
   visitorFp = Math.random().toString(36).slice(2) + Date.now().toString(36);
   sessionStorage.setItem('_spfp', visitorFp);
+}
+
+// HISTÓRICO — mensagens reais do banco
+let historyOldestId = null; // menor id carregado no chat
+let historyPage     = 0;
+let historyExhausted = false;
+
+async function loadHistory() {
+  var spinner  = document.getElementById('histSpinner');
+  var histText = document.getElementById('histText');
+
+  if (historyExhausted) {
+    // Spinner infinito + erro
+    histText.style.display = 'none';
+    spinner.style.display  = 'block';
+    setTimeout(function() {
+      spinner.style.display  = 'none';
+      histText.style.display = 'block';
+      histText.textContent   = 'Não foi possível carregar. Tente novamente.';
+    }, 3500);
+    return;
+  }
+
+  histText.style.display = 'none';
+  spinner.style.display  = 'block';
+
+  try {
+    var url = apiUrl('chat/history?room=') + encodeURIComponent(ROOM) + '&before_id=' + (historyOldestId || 0) + '&limit=25';
+    var res  = await fetch(url);
+    var data = await res.json();
+    var msgs = data.messages || [];
+
+    await new Promise(function(r) { setTimeout(r, 1000); }); // delay realista
+
+    if (msgs.length === 0) {
+      historyExhausted = true;
+      spinner.style.display  = 'none';
+      histText.style.display = 'block';
+      histText.textContent   = 'Não foi possível carregar. Tente novamente.';
+      return;
+    }
+
+    var feed     = document.getElementById('feed');
+    var oldHeight = feed.scrollHeight;
+
+    msgs.forEach(function(msg) {
+      if (!historyOldestId || msg.id < historyOldestId) historyOldestId = msg.id;
+      msgMap[msg.id] = msg;
+
+      var timeStr = formatTime(msg.posted_at);
+      var el = document.createElement('div');
+      el.className = 'msg-wrap';
+      el.id = 'msg-' + msg.id;
+      el.style.opacity = '0.85';
+
+      var nutri = (msg.archetype_name === 'Nutricionista' || msg.archetype_id == 4);
+      var badgeHtml = nutri ? '<span class="nutri-badge">🥦 Nutricionista</span>' : '';
+      var contentHtml = msg.message_type === 'tip'
+        ? '<div class="tip-wrap"><span class="tip-badge">💡 DICA</span> ' + escHtml(msg.content) + '</div>'
+        : escHtml(msg.content);
+
+      el.innerHTML =
+        '<div class="msg-avatar"><img src="' + avatarUrl(msg.avatar_seed || msg.bot_name) + '" alt=""></div>' +
+        '<div class="msg-body">' +
+          '<div class="msg-header"><span class="bot-name">' + escHtml(msg.bot_name) + '</span>' + badgeHtml + '</div>' +
+          '<div class="bubble"><div class="msg-text">' + contentHtml + '</div>' +
+          '<div class="bubble-footer"><span class="msg-time">' + timeStr + '</span></div></div>' +
+        '</div>';
+
+      feed.insertBefore(el, feed.firstChild);
+    });
+
+    feed.scrollTop += feed.scrollHeight - oldHeight;
+    historyPage++;
+
+    if (msgs.length < 25) historyExhausted = true;
+
+  } catch(e) {
+    historyExhausted = true;
+  }
+
+  spinner.style.display  = 'none';
+  histText.style.display = 'block';
+  histText.textContent   = '↑ Carregar mensagens anteriores';
+}
+
+function showHistoryLoader() {
+  // Capturar o menor id já carregado no chat
+  var allMsgs = Object.keys(msgMap).map(Number);
+  if (allMsgs.length > 0) historyOldestId = Math.min.apply(null, allMsgs);
+  document.getElementById('historyLoader').style.display = 'block';
 }
 
 // STATE
@@ -734,7 +898,13 @@ function renderMessage(msg, isVisitor) {
 }
 
 function scrollToMsg(id) {
-  if (msgMap[id]) msgMap[id].el.scrollIntoView({ behavior:'smooth', block:'center' });
+  if (!msgMap[id]) return;
+  var el = msgMap[id].el;
+  el.scrollIntoView({ behavior:'smooth', block:'center' });
+  setTimeout(function() {
+    el.classList.add('msg-highlight');
+    setTimeout(function() { el.classList.remove('msg-highlight'); }, 1200);
+  }, 400);
 }
 
 // REACT PICKER
@@ -794,7 +964,7 @@ async function toggleReact(msgId, emoji) {
 
   // Sincroniza com a API em background
   try {
-    const res = await fetch(API_BASE + '/chat/react', {
+    const res = await fetch(apiUrl('chat/react'), {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ room:ROOM, message_id:msgId, emoji:emoji, fp:visitorFp })
     });
@@ -825,7 +995,7 @@ async function fetchReactions() {
     const ids = Object.keys(msgMap).map(Number).filter(function(n){ return !isNaN(n); });
     if (ids.length === 0) return;
     const minId = Math.min.apply(null, ids);
-    const res  = await fetch(API_BASE + '/chat/reactions?room=' + encodeURIComponent(ROOM) + '&since_id=' + (minId - 1));
+    const res  = await fetch(apiUrl('chat/reactions?room=') + encodeURIComponent(ROOM) + '&since_id=' + (minId - 1));
     const data = await res.json();
     if (data.reactions) {
       Object.keys(data.reactions).forEach(function(id) {
@@ -953,7 +1123,7 @@ function clearTypingTimers() {
 // ================================================================
 async function fetchMessages() {
   try {
-    const res = await fetch(API_BASE + '/chat/messages?room=' + encodeURIComponent(ROOM) + '&last_id=' + lastId);
+    const res = await fetch(apiUrl('chat/messages?room=') + encodeURIComponent(ROOM) + '&last_id=' + lastId);
     if (!res.ok) {
       if (!initialized) document.getElementById('loading').innerHTML = '<div style="color:#ff4757;font-size:12px">Sala não encontrada ou inativa.</div>';
       return;
@@ -963,23 +1133,26 @@ async function fetchMessages() {
       var loading = document.getElementById('loading');
       if (loading) loading.remove();
       initialized = true;
+        showHistoryLoader();
     }
     if (data.room) setRoomInfo(data.room);
     if (data.stats) document.getElementById('onlineCount').textContent = data.stats.online_count.toLocaleString('pt-BR') + ' online';
 
     if (data.messages && data.messages.length > 0) {
+      var isInitial = (lastId === 0);
       data.messages.forEach(function(msg) {
         if (msg.bot_name && !knownBots.find(function(b){ return b.name === msg.bot_name; })) {
           knownBots.push({ name:msg.bot_name, seed:msg.avatar_seed || msg.bot_name });
         }
-        // Mensagens iniciais (lastId=0) renderizam direto sem typing
+        // Atualiza lastId imediatamente — garante que F5 não perde mensagens
+        lastId = Math.max(lastId, msg.id);
         if (!msgMap[msg.id]) {
-          if (lastId === 0) {
+          // Mensagens iniciais (carga do F5) renderizam direto sem typing
+          if (isInitial) {
             renderMessage(msg, false);
           } else {
             pendingMsgs.push(msg);
           }
-          lastId = Math.max(lastId, msg.id);
           if (!isBottom) { newMsgCount++; updateScrollBadge(); }
         }
       });
@@ -992,6 +1165,17 @@ async function fetchMessages() {
 // Processa fila de mensagens pendentes com typing entre elas
 function processPendingMsgs() {
   if (isProcessing || pendingMsgs.length === 0) return;
+
+  // Muitas mensagens acumuladas — renderiza tudo direto sem typing
+  if (pendingMsgs.length > 10) {
+    while (pendingMsgs.length > 0) {
+      var m = pendingMsgs.shift();
+      renderMessage(m, false);
+    }
+    scrollToBottom(false);
+    return;
+  }
+
   isProcessing = true;
 
   var msg = pendingMsgs.shift();
@@ -1130,7 +1314,7 @@ document.getElementById('feed').addEventListener('scroll', function() {
 var scrollTracked = false;
 document.getElementById('feed').addEventListener('scroll', function() {
   if (!scrollTracked && this.scrollTop > 100) {
-    fetch(API_BASE + '/chat/track', {
+    fetch(apiUrl('chat/track'), {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ room:ROOM, event:'scroll', meta:{ ts:Date.now() } })
     }).catch(function(){});
@@ -1140,12 +1324,12 @@ document.getElementById('feed').addEventListener('scroll', function() {
 
 // INIT
 fetchMessages();
-fetch(API_BASE + '/chat/track', {
+fetch(apiUrl('chat/track'), {
   method:'POST', headers:{'Content-Type':'application/json'},
   body: JSON.stringify({ room:ROOM, event:'embed_load', meta:{ ts:Date.now() } })
 }).catch(function(){});
 
-setInterval(fetchMessages, POLL_MS);
+schedulePoll(false);
 setInterval(fetchReactions, REACT_POLL_MS);
 </script>
 

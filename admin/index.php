@@ -698,6 +698,28 @@ input[type=range] { accent-color: var(--accent); cursor: pointer; width: 100%; }
 <!-- ======================================================== MODALS ======================================================== -->
 
 <!-- Modal: Nova Sala -->
+<!-- Modal: Editar Sala -->
+<div class="modal-bg" id="modalEditRoom">
+  <div class="modal">
+    <div class="modal-title">✏️ Editar Sala</div>
+    <input type="hidden" id="edit-room-id">
+    <div class="form-group"><label>Nome</label><input type="text" id="edit-room-name"></div>
+    <div class="form-group"><label>Descrição</label><textarea id="edit-room-desc" style="min-height:60px"></textarea></div>
+    <div class="form-group">
+      <label>Status</label>
+      <select id="edit-room-status">
+        <option value="inactive">Inativa</option>
+        <option value="active">Ativa</option>
+        <option value="paused">Pausada</option>
+      </select>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modalEditRoom')">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveRoom()">💾 Salvar</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-bg" id="modalRoom">
   <div class="modal">
     <div class="modal-title">Nova Sala</div>
@@ -738,7 +760,7 @@ input[type=range] { accent-color: var(--accent); cursor: pointer; width: 100%; }
     </div>
     <div id="blocksList">Carregando...</div>
     <div class="modal-footer" style="justify-content:space-between">
-      <button class="btn" style="background:rgba(74,158,255,0.15);color:var(--blue);border:1px solid rgba(74,158,255,0.3)" onclick="restartAllTimelines()">🔄 Reiniciar Tudo</button>
+
       <button class="btn btn-secondary" onclick="closeModal('modalBlocks')">Fechar</button>
     </div>
   </div>
@@ -940,6 +962,31 @@ input[type=range] { accent-color: var(--accent); cursor: pointer; width: 100%; }
   </div>
 </div>
 
+<!-- Modal: Progresso do Disparo -->
+<div class="modal-bg" id="modalDisparo" style="z-index:400">
+  <div class="modal" style="width:min(460px,100%)">
+    <div class="modal-title">⚡ Disparando Mensagens</div>
+    <div style="margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:8px">
+        <span id="disparo-status">Preparando...</span>
+        <span id="disparo-counter">0 / 0</span>
+      </div>
+      <div style="background:var(--border);border-radius:99px;height:10px;overflow:hidden">
+        <div id="disparo-bar" style="height:100%;width:0%;background:linear-gradient(90deg,var(--accent),#ff6b35);border-radius:99px;transition:width 0.3s ease"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:6px">
+        <span id="disparo-tempo">Calculando tempo restante...</span>
+        <span id="disparo-pct" style="color:var(--accent);font-weight:700">0%</span>
+      </div>
+    </div>
+    <div id="disparo-log" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px;max-height:160px;overflow-y:auto;font-size:11px;font-family:'JetBrains Mono',monospace;color:var(--muted);line-height:1.8"></div>
+    <div class="modal-footer" style="margin-top:14px">
+      <button class="btn btn-danger btn-sm" id="disparo-cancel-btn" onclick="cancelarDisparo()">✕ Cancelar</button>
+      <button class="btn btn-secondary btn-sm" id="disparo-close-btn" style="display:none" onclick="closeModal('modalDisparo')">Fechar</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <!-- ======================================================== SCRIPTS ======================================================== -->
@@ -968,7 +1015,12 @@ async function api(path, method = 'GET', body = null) {
     headers: { 'Content-Type': 'application/json', 'X-Admin-Token': localStorage.getItem('admin_token') || '' }
   };
   if (body !== null) opts.body = JSON.stringify(body);
-  const res  = await fetch(`${API}/${path}`, opts);
+  // Suporte a servidores sem mod_rewrite
+  const baseUrl = window._BASE + '/api/index.php';
+  const urlParts = path.split('?');
+  const pathOnly = urlParts[0]; // NÃO encode as barras — PHP precisa delas literais
+  const extra = urlParts[1] ? '&' + urlParts[1] : '';
+  const res  = await fetch(`${baseUrl}?path=${encodeURIComponent(pathOnly).replace(/%2F/gi,'/')}${extra}`, opts);
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || `Erro ${res.status}`);
   return data;
@@ -1122,6 +1174,9 @@ async function loadRooms() {
           <button class="btn btn-xs" style="background:rgba(74,158,255,0.15);color:var(--blue);border:1px solid rgba(74,158,255,0.3)" onclick="restartAllTimelinesById(${r.id})">🔄 Reiniciar</button>
           <button class="btn btn-xs btn-danger" onclick="deleteRoom(${r.id})">🗑 Excluir</button>
         </div>
+        <div style="text-align:center;margin-top:8px">
+          <button class="btn btn-xs" style="background:rgba(255,165,0,0.15);color:#ffa500;border:1px solid rgba(255,165,0,0.4);width:90%" onclick="dispararTodas(${r.id},'${escJ(r.name)}')">⚡ Disparar Todas</button>
+        </div>
       </div>`).join('')}</div>`;
   } catch(e) { toast(e.message, 'error'); }
 }
@@ -1192,13 +1247,25 @@ async function setRoomStatus(id, status) {
 }
 
 async function editRoom(id, name, desc) {
-  const newName = prompt('Nome da sala:', name);
-  if (newName === null) return;
-  const newDesc = prompt('Descrição:', desc);
-  if (newDesc === null) return;
+  document.getElementById('edit-room-id').value   = id;
+  document.getElementById('edit-room-name').value = name;
+  document.getElementById('edit-room-desc').value = desc;
+  // Busca status atual
+  const room = allRooms.find(r => r.id == id);
+  if (room) document.getElementById('edit-room-status').value = room.status || 'inactive';
+  openModal('modalEditRoom');
+}
+
+async function saveRoom() {
+  const id     = document.getElementById('edit-room-id').value;
+  const name   = document.getElementById('edit-room-name').value.trim();
+  const desc   = document.getElementById('edit-room-desc').value.trim();
+  const status = document.getElementById('edit-room-status').value;
+  if (!name) return toast('Nome obrigatório', 'error');
   try {
-    await api(`rooms/${id}`, 'PUT', { name: newName.trim(), description: newDesc.trim() });
+    await api(`rooms/${id}`, 'PUT', { name, description: desc, status });
     toast('Sala atualizada!');
+    closeModal('modalEditRoom');
     loadRooms(); loadDashboard();
   } catch(e) { toast(e.message, 'error'); }
 }
@@ -1289,9 +1356,93 @@ async function setBlockStatus(id, status) {
   } catch(e) { toast(e.message, 'error'); }
 }
 
-async function restartAllTimelinesById(roomId) {
-  if (!confirm('Reiniciar TODOS os blocos desta sala? Isso apagará as mensagens postadas e reiniciará do zero.')) return;
+let _disparoCancelado = false;
+
+function disparo_log(msg) {
+  const el = document.getElementById('disparo-log');
+  el.innerHTML += msg + '<br>';
+  el.scrollTop = el.scrollHeight;
+}
+
+async function dispararTodas(roomId, roomName) {
+  if (!confirm(`Disparar TODAS as mensagens de "${roomName}"?\nIsso reiniciará o chat.`)) return;
+
+  _disparoCancelado = false;
+  document.getElementById('disparo-status').textContent  = 'Iniciando...';
+  document.getElementById('disparo-counter').textContent = '0 / ?';
+  document.getElementById('disparo-bar').style.width     = '0%';
+  document.getElementById('disparo-pct').textContent     = '0%';
+  document.getElementById('disparo-tempo').textContent   = 'Aguarde...';
+  document.getElementById('disparo-log').innerHTML       = '';
+  document.getElementById('disparo-cancel-btn').style.display = 'inline-flex';
+  document.getElementById('disparo-close-btn').style.display  = 'none';
+  openModal('modalDisparo');
+
   try {
+    let offset   = 0;
+    const limit  = 50;
+    let total    = null;
+    let inserted = 0;
+    const inicio = Date.now();
+
+    while (true) {
+      if (_disparoCancelado) {
+        disparo_log('⛔ Cancelado pelo usuário.');
+        break;
+      }
+
+      const data = await api(`rooms/${roomId}/bulk_dispatch`, 'POST', { offset, limit });
+      disparo_log(`🔍 lote: inserted=${data.inserted} offset=${data.offset} total=${data.total} done=${data.done}`);
+
+      if (!data.ok) {
+        disparo_log(`❌ Erro: ${data.error}`);
+        break;
+      }
+
+      if (total === null) {
+        total = data.total;
+        disparo_log(`⚡ ${total} mensagens encontradas. Enviando de ${limit} em ${limit}...`);
+      }
+
+      inserted += data.inserted;
+      offset    = data.offset;
+
+      const pct      = total ? Math.round((inserted / total) * 100) : 0;
+      const elapsed  = (Date.now() - inicio) / 1000;
+      const restante = inserted > 0 ? Math.round((elapsed / inserted) * (total - inserted)) : null;
+      const tempoStr = restante !== null ? (restante > 60 ? `~${Math.ceil(restante/60)} min` : `~${restante}s`) : '...';
+
+      document.getElementById('disparo-bar').style.width     = pct + '%';
+      document.getElementById('disparo-pct').textContent     = pct + '%';
+      document.getElementById('disparo-counter').textContent = `${inserted} / ${total}`;
+      document.getElementById('disparo-tempo').textContent   = tempoStr + ' restantes';
+      document.getElementById('disparo-status').textContent  = 'Disparando...';
+      disparo_log(`📨 ${inserted}/${total} inseridas...`);
+
+      if (data.done) {
+        document.getElementById('disparo-bar').style.width     = '100%';
+        document.getElementById('disparo-pct').textContent     = '100%';
+        document.getElementById('disparo-tempo').textContent   = 'Concluído!';
+        document.getElementById('disparo-status').textContent  = `✅ ${inserted} mensagens postadas`;
+        document.getElementById('disparo-counter').textContent = `${inserted} / ${total}`;
+        disparo_log(`✅ Concluído! ${inserted} mensagens inseridas.`);
+        break;
+      }
+    }
+
+  } catch(e) {
+    disparo_log(`❌ Erro: ${e.message}`);
+    document.getElementById('disparo-status').textContent = 'Erro durante o disparo.';
+  }
+
+  document.getElementById('disparo-cancel-btn').style.display = 'none';
+  document.getElementById('disparo-close-btn').style.display  = 'inline-flex';
+}
+
+async function restartAllTimelinesById(roomId) {
+  if (!confirm('Reiniciar TODOS os blocos desta sala? Isso apagará as mensagens do chat e reiniciará do zero.')) return;
+  try {
+    await api(`rooms/${roomId}/clear_messages`, 'DELETE');
     const blocks = await api(`blocks?room_id=${roomId}`);
     for (const b of blocks) {
       await api(`blocks/${b.id}/status`, 'PUT', { status: 'pending' });
@@ -1301,8 +1452,9 @@ async function restartAllTimelinesById(roomId) {
 }
 
 async function restartAllTimelines() {
-  if (!confirm('Reiniciar TODOS os blocos desta sala? Isso apagará todas as mensagens postadas e reiniciará do zero.')) return;
+  if (!confirm('Reiniciar TODOS os blocos desta sala? Isso apagará as mensagens do chat e reiniciará do zero.')) return;
   try {
+    await api(`rooms/${currentRoomId}/clear_messages`, 'DELETE');
     const blocks = await api(`blocks?room_id=${currentRoomId}`);
     for (const b of blocks) {
       await api(`blocks/${b.id}/status`, 'PUT', { status: 'pending' });
@@ -1313,8 +1465,9 @@ async function restartAllTimelines() {
 }
 
 async function restartTimeline(id) {
-  if (!confirm('Reiniciar timeline? Isso apagará as mensagens já postadas deste bloco no feed e reiniciará do zero.')) return;
+  if (!confirm('Reiniciar timeline? Isso apagará as mensagens deste bloco no chat e reiniciará do zero.')) return;
   try {
+    await api(`blocks/${id}/clear_messages`, 'DELETE');
     await api(`blocks/${id}/status`, 'PUT', { status: 'pending' });
     toast('Timeline reiniciada! Use ▶ Iniciar para rodar novamente.');
     await loadBlocks();
@@ -1460,8 +1613,9 @@ async function loadTimelineMsgs(blockId) {
           </div>
           <div style="font-size:12.5px;line-height:1.5">${escHtml(m.content)}</div>
           ${m.reply_to_id ? `<div style="font-size:10px;color:var(--muted);margin-top:4px">↩ responde #${m.reply_to_id}</div>` : ''}
-          <div style="margin-top:8px">
+          <div style="margin-top:8px;display:flex;gap:6px">
             <button class="btn btn-xs btn-secondary" data-msg-id="${m.id}" onclick="openEditMsg(this)">✏️ Editar</button>
+            <button class="btn btn-xs btn-danger" onclick="deleteTimelineMsg(${m.id})">🗑</button>
           </div>
         </div>
       </div>
@@ -1526,6 +1680,15 @@ async function saveEditMsg() {
     closeModal('modalEditMsg');
     // Recarrega a lista de mensagens dentro do modal de timeline (sem fechar)
     const blockName = document.getElementById('timelineTitle').textContent.replace('Timeline: ', '');
+    await loadTimelineMsgs(currentBlockId);
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function deleteTimelineMsg(msgId) {
+  if (!confirm('Excluir esta mensagem da timeline?')) return;
+  try {
+    await api(`timeline/${currentBlockId}/msg/${msgId}`, 'DELETE');
+    toast('Mensagem excluída!');
     await loadTimelineMsgs(currentBlockId);
   } catch(e) { toast(e.message, 'error'); }
 }

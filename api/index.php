@@ -1,4 +1,6 @@
 <?php
+@ini_set('display_errors', 0);
+error_reporting(0);
 // ============================================================
 // api/index.php — API REST completa
 // Versão final unificada
@@ -104,6 +106,36 @@ switch ($action) {
                 'ts'       => time(),
                 'room'     => ['name' => $room['name'], 'avatar_url' => $room['avatar_url'] ?? null],
             ]);
+        }
+
+        // GET /api/chat/history?room=SLUG&before_id=ID&limit=25
+        if ($sub === 'history' && $method === 'GET') {
+            $roomSlug = $_GET['room']      ?? '';
+            $beforeId = (int)($_GET['before_id'] ?? 0);
+            $limit    = min((int)($_GET['limit']  ?? 25), 50);
+
+            $room = DB::fetch("SELECT id FROM rooms WHERE slug = ? AND status = 'active'", [$roomSlug]);
+            if (!$room) jsonResponse(['messages' => []]);
+
+            $msgs = DB::fetchAll(
+                "SELECT
+                    rm.id, rm.content, rm.message_type, rm.posted_at,
+                    rm.reply_to_room_msg_id,
+                    rm.display_name             as bot_name,
+                    rm.avatar_url, rm.avatar_seed, rm.archetype_id,
+                    COALESCE(a.name, '')      as archetype_name,
+                    COALESCE(a.avatar_seed, rm.avatar_seed) as avatar_seed,
+                    bl.name                     as block_name
+                 FROM room_messages rm
+                 LEFT JOIN archetypes a  ON a.id  = rm.archetype_id
+                 LEFT JOIN blocks    bl ON bl.id = rm.block_id
+                 WHERE rm.room_id = ? AND (? = 0 OR rm.id < ?)
+                 ORDER BY rm.id DESC
+                 LIMIT ?",
+                [$room['id'], $beforeId, $beforeId, $limit]
+            );
+            // Retorna em ordem cronológica (mais antigas primeiro)
+            jsonResponse(['messages' => array_reverse($msgs)]);
         }
 
         // GET /api/chat/reactions?room=SLUG&since_id=0
@@ -276,6 +308,22 @@ switch ($action) {
     case 'rooms':
         requireAdmin();
 
+        // GET /api/rooms/ID/all_messages — deve vir ANTES do GET genérico
+        if ($method === 'GET' && isset($parts[1]) && ($parts[2] ?? '') === 'all_messages') {
+            $roomId = (int)$parts[1];
+            $msgs = DB::fetchAll(
+                "SELECT tm.id, tm.block_id, tm.sequence_order, tm.content, tm.message_type,
+                        tm.reply_to_id, tm.archetype_id, tm.bot_id, tm.delay_after_prev,
+                        b.is_tips_block
+                 FROM timeline_messages tm
+                 JOIN blocks b ON b.id = tm.block_id
+                 WHERE b.room_id = ?
+                 ORDER BY tm.block_id ASC, tm.sequence_order ASC",
+                [$roomId]
+            );
+            jsonResponse($msgs);
+        }
+
         if ($method === 'GET') {
             jsonResponse(DB::fetchAll(
                 'SELECT r.*,
@@ -283,6 +331,215 @@ switch ($action) {
                     (SELECT COUNT(*) FROM room_messages WHERE room_id=r.id) as msg_count
                  FROM rooms r ORDER BY r.created_at DESC'
             ));
+        }
+
+        // POST /api/rooms/ID/bulk_dispatch — insere em lote com suporte a offset/limit
+        if ($method === 'POST' && isset($parts[1]) && ($parts[2] ?? '') === 'bulk_dispatch') {
+            $roomId  = (int)$parts[1];
+            $offset  = (int)($body['offset']  ?? 0);
+            $limit   = (int)($body['limit']   ?? 50);
+            $isFirst = ($offset === 0);
+
+            $pdo = DB::conn();
+            try {
+                // Primeira chamada: limpa e reseta
+                if ($isFirst) {
+                    DB::query('DELETE FROM room_messages WHERE room_id = ?', [$roomId]);
+                    DB::query("UPDATE blocks SET status='pending' WHERE room_id = ?", [$roomId]);
+                    DB::query(
+                        "UPDATE timeline_messages tm JOIN blocks b ON b.id = tm.block_id
+                         SET tm.posted_at = NULL WHERE b.room_id = ?",
+                        [$roomId]
+                    );
+                }
+
+                // Conta total
+                $totalRow = DB::fetch(
+                    "SELECT COUNT(*) as total FROM timeline_messages tm
+                     JOIN blocks b ON b.id = tm.block_id WHERE b.room_id = ?",
+                    [$roomId]
+                );
+                $total = (int)($totalRow['total'] ?? 0);
+                if ($total === 0) jsonResponse(['error' => 'Timeline vazia'], 404);
+
+                // Busca lote
+                $msgs = DB::fetchAll(
+                    "SELECT tm.*, b.is_tips_block, b.id as block_id_real
+                     FROM timeline_messages tm
+                     JOIN blocks b ON b.id = tm.block_id
+                     WHERE b.room_id = ?
+                     ORDER BY tm.block_id ASC, tm.sequence_order ASC
+                     LIMIT ? OFFSET ?",
+                    [$roomId, $limit, $offset]
+                );
+
+                if (empty($msgs)) {
+                    jsonResponse(['ok' => true, 'inserted' => 0, 'total' => $total, 'done' => true]);
+                }
+
+                // Pré-carrega name_pool
+                $namePoolRaw = DB::fetchAll('SELECT archetype_id, first_name, abbreviation FROM name_pool WHERE active = 1');
+                $namePool = [];
+                foreach ($namePoolRaw as $n) { $namePool[$n['archetype_id']][] = $n; }
+
+                $archetypesOther = DB::fetchAll('SELECT id FROM archetypes WHERE id != 4');
+
+                $stmt = $pdo->prepare(
+                    "INSERT INTO room_messages (room_id, block_id, timeline_message_id, bot_id, archetype_id,
+                      display_name, avatar_url, avatar_seed, content, message_type, reply_to_room_msg_id, posted_at)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,NOW())"
+                );
+
+                $inserted = 0;
+                foreach ($msgs as $tm) {
+                    $archetypeId = (int)($tm['archetype_id'] ?? 0);
+
+                    if (!empty($tm['is_tips_block'])) {
+                        $archetypeId = 4;
+                    } elseif ($archetypeId === 4) {
+                        $archetypeId = !empty($archetypesOther)
+                            ? (int)$archetypesOther[array_rand($archetypesOther)]['id']
+                            : 1;
+                    }
+
+                    if (!empty($tm['resolved_name'])) {
+                        $displayName = $tm['resolved_name'];
+                    } elseif ($archetypeId && !empty($namePool[$archetypeId])) {
+                        $pick        = $namePool[$archetypeId][array_rand($namePool[$archetypeId])];
+                        $displayName = $pick['first_name'] . ' ' . $pick['abbreviation'];
+                    } else {
+                        $displayName = 'Membro';
+                    }
+
+                    $avatarSeed = $displayName . $archetypeId;
+                    $avatarUrl  = avatarUrl($avatarSeed);
+
+                    // Resolve reply via query direta (mais confiável que mapa em lote)
+                    $replyId = null;
+                    if (!empty($tm['reply_to_id'])) {
+                        $orig = DB::fetch(
+                            'SELECT id FROM room_messages WHERE timeline_message_id = ? AND room_id = ? ORDER BY id DESC LIMIT 1',
+                            [$tm['reply_to_id'], $roomId]
+                        );
+                        if ($orig) $replyId = $orig['id'];
+                    }
+
+                    $stmt->execute([
+                        $roomId, $tm['block_id_real'], $tm['id'],
+                        null, $archetypeId,
+                        $displayName, $avatarUrl, $avatarSeed,
+                        $tm['content'], $tm['message_type'] ?? 'statement',
+                        $replyId
+                    ]);
+
+                    // Marca posted_at na timeline_message
+                    DB::query('UPDATE timeline_messages SET posted_at = NOW() WHERE id = ?', [$tm['id']]);
+
+                    $inserted++;
+                }
+
+                $newOffset = $offset + $inserted;
+                $done      = ($newOffset >= $total);
+
+                jsonResponse([
+                    'ok'       => true,
+                    'inserted' => $inserted,
+                    'offset'   => $newOffset,
+                    'total'    => $total,
+                    'done'     => $done,
+                ]);
+
+            } catch (Exception $e) {
+                jsonResponse(['error' => 'Erro no bulk: ' . $e->getMessage()], 500);
+            }
+        }
+
+
+        // POST /api/rooms/ID/post_message — deve vir ANTES do POST genérico
+        if ($method === 'POST' && isset($parts[1]) && ($parts[2] ?? '') === 'post_message') {
+            $roomId   = (int)$parts[1];
+            $body     = json_decode(file_get_contents('php://input'), true) ?? [];
+            $tmId     = (int)($body['timeline_message_id'] ?? 0);
+            if (!$tmId) jsonResponse(['error' => 'timeline_message_id obrigatório'], 400);
+
+            $tm = DB::fetch(
+                "SELECT tm.*, b.is_tips_block, b.id as block_id_real
+                 FROM timeline_messages tm
+                 JOIN blocks b ON b.id = tm.block_id
+                 WHERE tm.id = ? AND b.room_id = ?",
+                [$tmId, $roomId]
+            );
+            if (!$tm) jsonResponse(['error' => 'Mensagem não encontrada'], 404);
+
+            $archetypeId = (int)($tm['archetype_id'] ?? 0);
+            $displayName = null;
+            $avatarSeed  = null;
+            $avatarUrl   = null;
+            $botId       = null;
+
+            if (!empty($tm['bot_id'])) {
+                $bot = DB::fetch('SELECT * FROM bots WHERE id = ?', [$tm['bot_id']]);
+                if ($bot) {
+                    $displayName = $bot['name'] ?? 'Membro';
+                    $avatarSeed  = $bot['avatar_seed'] ?? $bot['name'];
+                    $avatarUrl   = avatarUrl($avatarSeed);
+                    $botId       = $bot['id'];
+                    $archetypeId = $bot['archetype_id'] ?? $archetypeId;
+                }
+            }
+
+            if (!$displayName && !empty($tm['resolved_name'])) {
+                $displayName = $tm['resolved_name'];
+                $avatarSeed  = $displayName;
+                $avatarUrl   = avatarUrl($avatarSeed);
+            }
+
+            if (!$displayName && $archetypeId) {
+                // Bloco normal nao pode usar arquetipo 4
+                if ($archetypeId === 4 && empty($tm['is_tips_block'])) {
+                    $outro = DB::fetch('SELECT id FROM archetypes WHERE id != 4 ORDER BY RAND() LIMIT 1');
+                    $archetypeId = $outro ? (int)$outro['id'] : 1;
+                }
+                $pool = DB::fetchAll(
+                    'SELECT first_name, abbreviation FROM name_pool WHERE archetype_id = ? AND active = 1 ORDER BY RAND() LIMIT 1',
+                    [$archetypeId]
+                );
+                if ($pool) {
+                    $pick        = $pool[0];
+                    $displayName = $pick['first_name'] . ' ' . $pick['abbreviation'];
+                    $avatarSeed  = $displayName;
+                    $avatarUrl   = avatarUrl($avatarSeed);
+                }
+            }
+
+            if (!$displayName) {
+                $displayName = 'Membro';
+                $avatarSeed  = 'membro';
+                $avatarUrl   = avatarUrl($avatarSeed);
+            }
+
+            $replyId = null;
+            if (!empty($tm['reply_to_id'])) {
+                $orig = DB::fetch(
+                    'SELECT id FROM room_messages WHERE timeline_message_id = ? AND room_id = ? ORDER BY id DESC LIMIT 1',
+                    [$tm['reply_to_id'], $roomId]
+                );
+                if ($orig) $replyId = $orig['id'];
+            }
+
+            DB::query(
+                "INSERT INTO room_messages (room_id, block_id, timeline_message_id, bot_id, archetype_id,
+                  display_name, avatar_url, avatar_seed, content, message_type, reply_to_room_msg_id, posted_at)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,NOW())",
+                [
+                    $roomId, $tm['block_id_real'], $tmId,
+                    $botId, $archetypeId,
+                    $displayName, $avatarUrl, $avatarSeed,
+                    $tm['content'], $tm['message_type'] ?? 'statement',
+                    $replyId
+                ]
+            );
+            jsonResponse(['ok' => true]);
         }
 
         if ($method === 'POST') {
@@ -313,6 +570,13 @@ switch ($action) {
             jsonResponse(['ok' => true]);
         }
 
+        // DELETE /api/rooms/ID/clear_messages
+        if ($method === 'DELETE' && isset($parts[1]) && ($parts[2] ?? '') === 'clear_messages') {
+            $roomId = (int)$parts[1];
+            DB::query('DELETE FROM room_messages WHERE room_id = ?', [$roomId]);
+            jsonResponse(['ok' => true, 'cleared' => 'room_messages']);
+        }
+
         if ($method === 'DELETE' && isset($parts[1])) {
             $roomId = (int)$parts[1];
             DB::query('DELETE FROM rooms WHERE id = ?', [$roomId]);
@@ -322,7 +586,6 @@ switch ($action) {
         jsonResponse(['error' => 'Método não suportado'], 405);
         break;
 
-    // ── BLOCOS ──────────────────────────────────────────────
     case 'blocks':
         requireAdmin();
 
@@ -393,6 +656,13 @@ switch ($action) {
             $params[] = $blockId;
             DB::query($sql, $params);
             jsonResponse(['ok' => true]);
+        }
+
+        // DELETE /api/blocks/ID/clear_messages — limpa room_messages do bloco
+        if ($method === 'DELETE' && isset($parts[1]) && ($parts[2] ?? '') === 'clear_messages') {
+            $blockId = (int)$parts[1];
+            DB::query('DELETE FROM room_messages WHERE block_id = ?', [$blockId]);
+            jsonResponse(['ok' => true, 'cleared' => 'block_messages']);
         }
 
         if ($method === 'DELETE' && isset($parts[1])) {

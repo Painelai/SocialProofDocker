@@ -101,6 +101,22 @@ class ChatEngine {
                 continue;
             }
 
+            // Se é uma resposta, verificar se a mensagem original já existe no room_messages
+            // Se não existir, pular esta mensagem — não faz sentido sem contexto
+            if (!empty($next['reply_to_id'])) {
+                $originalExists = DB::fetch(
+                    'SELECT rm.id FROM room_messages rm
+                     JOIN timeline_messages tm ON tm.id = rm.timeline_message_id
+                     WHERE tm.id = ? AND rm.room_id = ?',
+                    [$next['reply_to_id'], $roomId]
+                );
+                if (!$originalExists) {
+                    // Pula essa mensagem — marca como postada para não travar o bloco
+                    DB::query('UPDATE timeline_messages SET posted_at = NOW() WHERE id = ?', [$next['id']]);
+                    continue;
+                }
+            }
+
             if ($lastInBlock) {
                 $blockDelay = (int)$next['delay_after_prev'];
 
@@ -211,6 +227,9 @@ class ChatEngine {
 
         DB::query('UPDATE timeline_messages SET posted_at = NOW() WHERE id = ?', [$next['id']]);
 
+        // Limpar histórico se atingir 2000 mensagens (mantém 1000)
+        self::pruneRoomMessages($roomId);
+
         return [
             'room_msg_id' => $roomMsgId,
             'block_id'    => $block['id'],
@@ -268,11 +287,31 @@ class ChatEngine {
         if (empty($pending)) return;
 
         foreach ($pending as $block) {
-            // Embaralhar sequence_order para começar por mensagem aleatória
-            $msgs = DB::fetchAll('SELECT id FROM timeline_messages WHERE block_id = ? ORDER BY RAND()', [$block['id']]);
-            foreach ($msgs as $i => $m) {
-                DB::query('UPDATE timeline_messages SET sequence_order = ? WHERE id = ?', [$i + 1, $m['id']]);
+            // Encontrar uma tip sem reply para ser a primeira mensagem
+            $firstMsg = DB::fetch(
+                "SELECT id, sequence_order FROM timeline_messages
+                 WHERE block_id = ? AND message_type = 'tip' AND reply_to_id IS NULL
+                 ORDER BY RAND() LIMIT 1",
+                [$block['id']]
+            );
+
+            if ($firstMsg) {
+                // Pega o sequence_order original da primeira mensagem do bloco
+                $originalFirst = DB::fetch(
+                    'SELECT id, sequence_order FROM timeline_messages
+                     WHERE block_id = ? ORDER BY sequence_order ASC LIMIT 1',
+                    [$block['id']]
+                );
+
+                // Troca o sequence_order entre a tip escolhida e a primeira original
+                if ($originalFirst && $originalFirst['id'] !== $firstMsg['id']) {
+                    DB::query('UPDATE timeline_messages SET sequence_order = ? WHERE id = ?',
+                        [$originalFirst['sequence_order'], $firstMsg['id']]);
+                    DB::query('UPDATE timeline_messages SET sequence_order = ? WHERE id = ?',
+                        [$firstMsg['sequence_order'], $originalFirst['id']]);
+                }
             }
+            // Resto permanece na ordem original do banco — sem embaralhar
         }
 
         DB::query(
@@ -346,7 +385,7 @@ class ChatEngine {
                 bl.name                     as block_name
              FROM room_messages rm
              LEFT JOIN archetypes a  ON a.id  = rm.archetype_id
-             JOIN  blocks         bl ON bl.id = rm.block_id
+             LEFT JOIN blocks    bl ON bl.id = rm.block_id
              WHERE rm.room_id = ? AND rm.id > ?
              ORDER BY rm.posted_at ASC, rm.id ASC
              LIMIT ?',
@@ -354,7 +393,7 @@ class ChatEngine {
         );
     }
 
-    public static function getRecentMessages(int $roomId, int $limit = 80): array {
+    public static function getRecentMessages(int $roomId, int $limit = 1040): array {
         $rows = DB::fetchAll(
             'SELECT
                 rm.id, rm.content, rm.message_type, rm.posted_at,
@@ -366,9 +405,9 @@ class ChatEngine {
                 bl.name                     as block_name
              FROM room_messages rm
              LEFT JOIN archetypes a  ON a.id  = rm.archetype_id
-             JOIN  blocks         bl ON bl.id = rm.block_id
+             LEFT JOIN blocks    bl ON bl.id = rm.block_id
              WHERE rm.room_id = ?
-             ORDER BY rm.posted_at DESC, rm.id DESC
+             ORDER BY rm.id DESC
              LIMIT ?',
             [$roomId, $limit]
         );
@@ -387,12 +426,37 @@ class ChatEngine {
             [$roomId]
         );
 
-        $seed      = crc32(date('Ymd') . $roomId);
-        $fakeExtra = 47 + abs($seed) % 266;
+        // Contador orgânico: oscila entre 437 e 1837 sem tocar os extremos
+        // Baseado em ciclos senoidais combinados com ruído por hora/minuto
+        // Nunca toca o mínimo (437) nem o máximo (1837)
+        $min     = 450;   // mínimo real (acima do piso 437)
+        $max     = 1820;  // máximo real (abaixo do teto 1837)
+        $range   = $max - $min;
+
+        // Hora do dia em radianos (0-24h → 0-2π)
+        $hour    = (int)date('G');   // 0-23
+        $minute  = (int)date('i');   // 0-59
+        $second  = (int)date('s');   // 0-59
+        $dayFrac = ($hour * 3600 + $minute * 60 + $second) / 86400.0;
+
+        // Curva principal: pico no meio do dia, vale de madrugada
+        $wave1 = sin($dayFrac * 2 * M_PI - M_PI / 2); // -1 a 1
+
+        // Ondulação secundária mais rápida (ciclo de ~4h) para variação orgânica
+        $wave2 = sin($dayFrac * 2 * M_PI * 6) * 0.18;
+
+        // Micro-ruído por minuto (varia a cada minuto de forma consistente)
+        $noise = sin(crc32(date('YmdHi') . $roomId) * 0.0001) * 0.08;
+
+        // Combina as ondas: normaliza de -1~1 para 0~1
+        $combined = ($wave1 * 0.74 + $wave2 + $noise + 1.0) / 2.0;
+        $combined = max(0.02, min(0.98, $combined)); // nunca toca 0 ou 1
+
+        $fakeOnline = (int)round($min + $combined * $range);
 
         return [
             'total_messages' => (int)($totalMessages['total'] ?? 0),
-            'online_count'   => (int)($onlineUsers['total'] ?? 0) + $fakeExtra,
+            'online_count'   => $fakeOnline,
             'active_blocks'  => (int)($activeBlocks['c'] ?? 0),
         ];
     }
