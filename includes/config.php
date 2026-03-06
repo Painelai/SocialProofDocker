@@ -1,8 +1,7 @@
 <?php
 // ============================================================
 // config.php — Social Proof Engine
-// Versão final unificada
-// Suporta: InfinityFree, Hostgator, localhost (Android/aWebServer)
+// Banco: Railway MySQL
 // ============================================================
 
 define('APP_VERSION', '2.0.0');
@@ -11,21 +10,16 @@ define('CLAUDE_MODEL', 'claude-opus-4-5');
 date_default_timezone_set('America/Sao_Paulo');
 
 // ============================================================
-// BANCO DE DADOS
-// Prioridade: variável de ambiente > valor fixo abaixo
-// Para InfinityFree: DB_HOST = sql102.infinityfree.com
-// Para Hostgator/localhost: DB_HOST = localhost
+// BANCO DE DADOS — Railway
 // ============================================================
-define('DB_HOST', getenv('DB_HOST') ?: 'localhost');
-define('DB_PORT', getenv('DB_PORT') ?: '3306');
-define('DB_NAME', getenv('DB_NAME') ?: 'socialproof3');
+define('DB_HOST', getenv('DB_HOST') ?: 'crossover.proxy.rlwy.net');
+define('DB_PORT', getenv('DB_PORT') ?: '23106');
+define('DB_NAME', getenv('DB_NAME') ?: 'railway');
 define('DB_USER', getenv('DB_USER') ?: 'root');
-define('DB_PASS', getenv('DB_PASS') ?: '');
+define('DB_PASS', getenv('DB_PASS') ?: 'ZREOGQmHkceFYdtDSKtVgdjEvPPxdWOu');
 
 // ============================================================
 // Database — Singleton PDO
-// Métodos: conn(), fetch(), fetchAll(), insert(), query()
-// query() = alias de execute() para compatibilidade total
 // ============================================================
 class DB {
     private static $instance = null;
@@ -41,6 +35,7 @@ class DB {
                         PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
                         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                         PDO::ATTR_EMULATE_PREPARES   => false,
+                        PDO::ATTR_TIMEOUT            => 10,
                     ]
                 );
             } catch (PDOException $e) {
@@ -73,20 +68,19 @@ class DB {
         return self::conn()->lastInsertId();
     }
 
-    // query() executa UPDATE/DELETE/INSERT sem retorno de ID
     public static function query(string $sql, array $params = []): bool {
         $stmt = self::conn()->prepare($sql);
         return $stmt->execute($params);
+    }
+
+    public static function execute(string $sql, array $params = []): bool {
+        return self::query($sql, $params);
     }
 }
 
 // ============================================================
 // Helpers globais
 // ============================================================
-
-/**
- * Lê uma configuração do banco (tabela settings)
- */
 function getSetting(string $key): string {
     try {
         $row = DB::fetch('SELECT `value` FROM settings WHERE `key` = ?', [$key]);
@@ -96,9 +90,6 @@ function getSetting(string $key): string {
     }
 }
 
-/**
- * Grava uma configuração no banco (upsert)
- */
 function setSetting(string $key, string $value): void {
     DB::query(
         'INSERT INTO settings (`key`, `value`) VALUES (?,?) ON DUPLICATE KEY UPDATE `value`=?, updated_at=NOW()',
@@ -106,9 +97,6 @@ function setSetting(string $key, string $value): void {
     );
 }
 
-/**
- * Envia JSON e encerra execução
- */
 function jsonResponse(array $data, int $code = 200): void {
     http_response_code($code);
     header('Content-Type: application/json; charset=utf-8');
@@ -117,9 +105,6 @@ function jsonResponse(array $data, int $code = 200): void {
     exit;
 }
 
-/**
- * Gera slug a partir de texto (suporte a acentos PT-BR)
- */
 function generateSlug(string $text): string {
     $text = mb_strtolower($text, 'UTF-8');
     $from = ['á','à','ã','â','ä','é','è','ê','ë','í','ì','î','ï','ó','ò','õ','ô','ö','ú','ù','û','ü','ç','ñ'];
@@ -130,9 +115,6 @@ function generateSlug(string $text): string {
     return trim($text, '-');
 }
 
-/**
- * Gera URL de avatar DiceBear a partir de seed
- */
 function avatarUrl(string $seed): string {
     return 'https://api.dicebear.com/7.x/avataaars/svg?seed=' . urlencode($seed)
          . '&backgroundColor=b6e3f4,c0aede,d1d4f9,ffd5dc,ffdfbf';

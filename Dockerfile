@@ -1,16 +1,13 @@
 FROM php:8.2-apache
 
-# Instalar extensões PHP necessárias
+# Extensões necessárias
 RUN docker-php-ext-install pdo pdo_mysql
 
 # Habilitar mod_rewrite
 RUN a2enmod rewrite
 
-# Configurar Apache
-RUN echo '<Directory /var/www/html>\n\
-    AllowOverride All\n\
-    Require all granted\n\
-</Directory>' >> /etc/apache2/apache2.conf
+# Permitir .htaccess
+RUN sed -i 's/AllowOverride None/AllowOverride All/g' /etc/apache2/apache2.conf
 
 # Copiar projeto
 COPY . /var/www/html/
@@ -19,7 +16,5 @@ COPY . /var/www/html/
 RUN chown -R www-data:www-data /var/www/html \
     && chmod -R 755 /var/www/html
 
-# Porta
 EXPOSE 80
-
 CMD ["apache2-foreground"]
