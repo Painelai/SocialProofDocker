@@ -563,94 +563,110 @@ if (!visitorFp) {
   sessionStorage.setItem('_spfp', visitorFp);
 }
 
-// HISTÓRICO — mensagens reais do banco
-let historyOldestId = null; // menor id carregado no chat
-let historyPage     = 0;
-let historyExhausted = false;
+// HISTÓRICO FALSO
+const FAKE_HISTORY = [
+  { name:'Fernanda R.', text:'Alguém mais sentiu o inchaço sumir nos primeiros dias? Parece mágica', time:'08:14' },
+  { name:'Rodrigo M.', text:'Sim!! Perdi 2kg só de retenção na primeira semana', time:'08:17' },
+  { name:'Claudia B.', text:'O protocolo é simples mas precisa de disciplina. Vale cada segundo', time:'08:21' },
+  { name:'Marcelo T.', text:'Comecei há 3 semanas. -6kg. Minha esposa quer começar também', time:'08:25' },
+  { name:'Fatima N.', text:'Eu tinha medo que fosse restritivo mas como de tudo, só mudo a ordem', time:'08:29' },
+  { name:'Eduardo S.', text:'A fome sumiu no 4º dia. Nunca tinha acontecido em nenhuma dieta', time:'08:33' },
+  { name:'Patricia V.', text:'Meu médico ficou impressionado com os exames depois de 30 dias 😊', time:'08:38' },
+  { name:'Guilherme A.', text:'R$29,90 com acesso vitalício foi a melhor compra que fiz esse ano', time:'08:42' },
+  { name:'Sonia K.', text:'Já indiquei para 4 pessoas da família. Todas com resultado', time:'08:47' },
+  { name:'Lucas F.', text:'Quem aqui perdeu acima de 15kg? Quero saber se é possível', time:'08:51' },
+  { name:'Renata P.', text:'Eu!! -18kg em 45 dias. Choro toda vez que lembro onde estava', time:'08:54' },
+  { name:'Thiago C.', text:'Cara isso é incrível. Parabéns Renata!! 🙌', time:'08:56' },
+  { name:'Mariana L.', text:'A sequência alimentar faz toda diferença. Parece simples mas é ciência', time:'09:02' },
+  { name:'Roberto H.', text:'Tentei low carb, jejum, tudo. Só o protocolo funcionou de verdade', time:'09:07' },
+  { name:'Juliana W.', text:'Fibra primeiro muda tudo. A glicose nem sobe mais depois das refeições', time:'09:11' },
+  { name:'Carlos E.', text:'Meu smartwatch registrou metabolismo 18% mais alto depois de 2 semanas', time:'09:15' },
+  { name:'Vera M.', text:'Para quem tem mais de 50: funciona igual. Minha mãe tem 63 e -9kg', time:'09:19' },
+  { name:'Anderson J.', text:'SLC cara -7kg e a única coisa que mudei foi a ordem do prato', time:'09:23' },
+  { name:'Camila O.', text:'Roupas que não usava há 3 anos servindo de novo. Que sensação boa', time:'09:28' },
+  { name:'Paulo R.', text:'Tirei a camisa na praia pela primeira vez em anos. Valeu demais', time:'09:33' },
+  { name:'Beatriz S.', text:'O protocolo funciona em restaurante também. Só pedir salada primeiro', time:'09:37' },
+  { name:'Felipe N.', text:'Colesterol LDL caiu 20 pontos sem remédio. Médico surpreso', time:'09:41' },
+  { name:'Adriana C.', text:'Gente vocês viram o grupo crescendo? Cada vez mais gente chegando', time:'09:46' },
+  { name:'Marcos T.', text:'É porque funciona mesmo. Resultado fala mais alto que propaganda', time:'09:49' },
+  { name:'Lucia F.', text:'Comecei ontem. Ansiosa para ver os resultados!! 🤩', time:'09:52' },
+  { name:'Sandra B.', text:'Primeira semana: -3,5kg e a barriga já desinchando. Impressionante', time:'10:03' },
+  { name:'Diego L.', text:'Papo reto: homem tem resultado mais rápido mesmo. -9kg em 5 semanas', time:'10:08' },
+  { name:'Tatiana R.', text:'A fome da tarde que me matava simplesmente sumiu. Sem fazer nada diferente', time:'10:13' },
+  { name:'Bruno K.', text:'Minha namorada não me reconheceu numa foto de 40 dias atrás kkkkk', time:'10:18' },
+  { name:'Elaine M.', text:'Quem falou que ia ser difícil estava errado. É mais fácil que qualquer dieta', time:'10:22' },
+  { name:'Rafael C.', text:'Bioimpedância hoje: -4,2% gordura corporal em 3 semanas. Dados reais', time:'10:27' },
+  { name:'Simone P.', text:'Meu marido entrou no protocolo depois de ver meu resultado. Que orgulho', time:'10:31' },
+  { name:'Henrique A.', text:'Acima de 15kg é possível sim. Estou em -22kg e ainda continuo', time:'10:35' },
+  { name:'Vanessa O.', text:'Gente a pressão arterial normalizou. Parece que o corpo inteiro agradeceu', time:'10:39' },
+  { name:'Leandro S.', text:'Não precisei cortar nada. Como arroz, frango, ovo. Só mudei a ordem', time:'10:44' },
+  { name:'Priscila T.', text:'Calça 44 voltou a fechar!! Estava guardada há 2 anos 😭❤️', time:'10:48' },
+  { name:'Gustavo F.', text:'O acesso vitalício é o diferencial. Qualquer dúvida que tiver no futuro', time:'10:52' },
+  { name:'Daniela H.', text:'Semana 4: -11kg. Minha meta era 10 e já ultrapassei. Continuando!', time:'10:57' },
+  { name:'Fábio N.', text:'Esse grupo é incrível. Motivação todo dia aqui dentro', time:'11:02' },
+  { name:'Aline C.', text:'Pra quem tá começando: não desiste na primeira semana. O 4º dia é mágico', time:'11:07' },
+  { name:'Ricardo B.', text:'Era cético total. Hoje sou o maior divulgador. Os dados não mentem', time:'11:12' },
+  { name:'Monica L.', text:'Filha, marido e eu. Família toda no protocolo. Resultado em todo mundo', time:'11:16' },
+  { name:'Wagner M.', text:'Quem tem diabetes tipo 2: glicemia em jejum caiu 23 pontos. Consulte seu médico', time:'11:21' },
+  { name:'Cristina R.', text:'O biquíni que comprei como meta serviu 2 semanas antes do prazo que imaginei', time:'11:25' },
+  { name:'Alexandre P.', text:'Boto fé que quem começou hoje vai aparecer aqui daqui 30 dias com resultado', time:'11:29' },
+  { name:'Natalia S.', text:'Joelho parou de doer, humor melhorou, sono melhor. Não é só emagrecimento', time:'11:33' },
+  { name:'Cesar O.', text:'-8kg e a melhor parte: sem fome, sem sofrimento, sem academia', time:'11:38' },
+  { name:'Isabela M.', text:'Gratidão. Mudou mais do que o meu corpo. Mudou minha relação com comida', time:'11:42' },
+  { name:'Vitor L.', text:'Quem pegou na época que estava R$29,90 fez o negócio da vida. Valor enorme', time:'11:47' },
+];
+
+let historyPage = 0;
 
 async function loadHistory() {
-  var spinner  = document.getElementById('histSpinner');
-  var histText = document.getElementById('histText');
+  const spinner = document.getElementById('histSpinner');
+  const histText = document.getElementById('histText');
 
-  if (historyExhausted) {
-    // Spinner infinito + erro
+  if (historyPage >= 2) {
     histText.style.display = 'none';
-    spinner.style.display  = 'block';
+    spinner.style.display = 'block';
     setTimeout(function() {
-      spinner.style.display  = 'none';
+      spinner.style.display = 'none';
       histText.style.display = 'block';
-      histText.textContent   = 'Não foi possível carregar. Tente novamente.';
+      histText.textContent = 'Não foi possível carregar. Tente novamente.';
     }, 3500);
     return;
   }
 
   histText.style.display = 'none';
-  spinner.style.display  = 'block';
+  spinner.style.display = 'block';
 
-  try {
-    var url = apiUrl('chat/history?room=') + encodeURIComponent(ROOM) + '&before_id=' + (historyOldestId || 0) + '&limit=25';
-    var res  = await fetch(url);
-    var data = await res.json();
-    var msgs = data.messages || [];
+  await new Promise(function(r) { setTimeout(r, 1200); });
 
-    await new Promise(function(r) { setTimeout(r, 1000); }); // delay realista
+  var feed = document.getElementById('feed');
+  var oldHeight = feed.scrollHeight;
+  var start = historyPage === 0 ? 25 : 0;
+  var end   = historyPage === 0 ? 50 : 25;
+  var msgs  = FAKE_HISTORY.slice(start, end);
 
-    if (msgs.length === 0) {
-      historyExhausted = true;
-      spinner.style.display  = 'none';
-      histText.style.display = 'block';
-      histText.textContent   = 'Não foi possível carregar. Tente novamente.';
-      return;
-    }
+  var frag = document.createDocumentFragment();
+  msgs.forEach(function(m) {
+    var div = document.createElement('div');
+    div.className = 'msg-wrap';
+    div.style.opacity = '0.85';
+    div.innerHTML = '<div class="msg-avatar"><img src="' + avatarUrl(m.name) + '" alt=""></div>' +
+      '<div class="msg-body">' +
+      '<div class="msg-header"><span class="bot-name">' + escHtml(m.name) + '</span></div>' +
+      '<div class="bubble"><div class="msg-text">' + escHtml(m.text) + '</div>' +
+      '<div class="bubble-footer"><span class="msg-time">' + m.time + '</span></div></div></div>';
+    frag.appendChild(div);
+  });
 
-    var feed     = document.getElementById('feed');
-    var oldHeight = feed.scrollHeight;
+  feed.insertBefore(frag, feed.firstChild);
+  feed.scrollTop += feed.scrollHeight - oldHeight;
 
-    msgs.forEach(function(msg) {
-      if (!historyOldestId || msg.id < historyOldestId) historyOldestId = msg.id;
-      msgMap[msg.id] = msg;
-
-      var timeStr = formatTime(msg.posted_at);
-      var el = document.createElement('div');
-      el.className = 'msg-wrap';
-      el.id = 'msg-' + msg.id;
-      el.style.opacity = '0.85';
-
-      var nutri = (msg.archetype_name === 'Nutricionista' || msg.archetype_id == 4);
-      var badgeHtml = nutri ? '<span class="nutri-badge">🥦 Nutricionista</span>' : '';
-      var contentHtml = msg.message_type === 'tip'
-        ? '<div class="tip-wrap"><span class="tip-badge">💡 DICA</span> ' + escHtml(msg.content) + '</div>'
-        : escHtml(msg.content);
-
-      el.innerHTML =
-        '<div class="msg-avatar"><img src="' + avatarUrl(msg.avatar_seed || msg.bot_name) + '" alt=""></div>' +
-        '<div class="msg-body">' +
-          '<div class="msg-header"><span class="bot-name">' + escHtml(msg.bot_name) + '</span>' + badgeHtml + '</div>' +
-          '<div class="bubble"><div class="msg-text">' + contentHtml + '</div>' +
-          '<div class="bubble-footer"><span class="msg-time">' + timeStr + '</span></div></div>' +
-        '</div>';
-
-      feed.insertBefore(el, feed.firstChild);
-    });
-
-    feed.scrollTop += feed.scrollHeight - oldHeight;
-    historyPage++;
-
-    if (msgs.length < 25) historyExhausted = true;
-
-  } catch(e) {
-    historyExhausted = true;
-  }
-
-  spinner.style.display  = 'none';
+  historyPage++;
+  spinner.style.display = 'none';
   histText.style.display = 'block';
-  histText.textContent   = '↑ Carregar mensagens anteriores';
+  histText.textContent = '↑ Carregar mensagens anteriores';
 }
 
 function showHistoryLoader() {
-  // Capturar o menor id já carregado no chat
-  var allMsgs = Object.keys(msgMap).map(Number);
-  if (allMsgs.length > 0) historyOldestId = Math.min.apply(null, allMsgs);
   document.getElementById('historyLoader').style.display = 'block';
 }
 
