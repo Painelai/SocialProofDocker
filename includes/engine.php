@@ -30,9 +30,15 @@ class ChatEngine {
 
     // ----------------------------------------------------------------
     // processRoom() — escolhe a próxima mensagem a postar na room
-    // Sem GET_LOCK — compatível com Filess.io e hosts sem suporte a locks
+    // GET_LOCK garante que apenas uma requisição paralela processa por vez
     // ----------------------------------------------------------------
     public static function processRoom(int $roomId): ?array {
+        $lockName = 'sp_room_' . $roomId;
+
+        // Tenta adquirir lock por 0s — se outra requisição já processa, desiste
+        $lock = DB::fetch("SELECT GET_LOCK(?, 0) as locked", [$lockName]);
+        if (!$lock || !$lock['locked']) return null;
+
         try {
             self::startPendingBlocks($roomId);
             self::markDoneBlocks($roomId);
@@ -57,8 +63,8 @@ class ChatEngine {
 
             return self::postMessage($chosen, $roomId);
 
-        } catch (\Exception $e) {
-            return null;
+        } finally {
+            DB::fetch("SELECT RELEASE_LOCK(?)", [$lockName]);
         }
     }
 
