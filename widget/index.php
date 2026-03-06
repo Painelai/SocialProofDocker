@@ -539,6 +539,7 @@ let _fastModeCount  = 0; // quantas rodadas consecutivas vieram com muitas msgs
 function schedulePoll(fast) {
   clearTimeout(_pollTimer);
   _pollTimer = setTimeout(async function() {
+    if (typeof _lastPollAt !== "undefined") _lastPollAt = Date.now();
     const before = lastId;
     await fetchMessages();
     const newMsgs = lastId - before;
@@ -671,7 +672,8 @@ function showHistoryLoader() {
 }
 
 // STATE
-let lastId       = 0;
+// Persistência: restaura lastId da sessão para não perder mensagens no F5
+let lastId       = parseInt(sessionStorage.getItem('_sp_lastId_' + ROOM) || '0');
 let isBottom     = true;
 let initialized  = false;
 let newMsgCount  = 0;
@@ -1142,6 +1144,7 @@ async function fetchMessages() {
     const res = await fetch(apiUrl('chat/messages?room=') + encodeURIComponent(ROOM) + '&last_id=' + lastId);
     if (!res.ok) {
       if (!initialized) document.getElementById('loading').innerHTML = '<div style="color:#ff4757;font-size:12px">Sala não encontrada ou inativa.</div>';
+      schedulePoll(false);
       return;
     }
     const data = await res.json();
@@ -1162,6 +1165,7 @@ async function fetchMessages() {
         }
         // Atualiza lastId imediatamente — garante que F5 não perde mensagens
         lastId = Math.max(lastId, msg.id);
+        sessionStorage.setItem('_sp_lastId_' + ROOM, lastId);
         if (!msgMap[msg.id]) {
           // Mensagens iniciais (carga do F5) renderizam direto sem typing
           if (isInitial) {
@@ -1175,7 +1179,7 @@ async function fetchMessages() {
       scrollToBottom(false);
       processPendingMsgs();
     }
-  } catch(e) { console.warn('Poll error:', e); }
+  } catch(e) { console.warn('Poll error:', e); schedulePoll(false); }
 }
 
 // Processa fila de mensagens pendentes com typing entre elas
@@ -1347,6 +1351,17 @@ fetch(apiUrl('chat/track'), {
 
 schedulePoll(false);
 setInterval(fetchReactions, REACT_POLL_MS);
+
+// Watchdog — reinicia polling se travar por mais de 20s
+let _lastPollAt = Date.now();
+const _origSchedulePoll = schedulePoll;
+setInterval(function() {
+  if (Date.now() - _lastPollAt > 20000) {
+    console.warn('Watchdog: reiniciando polling...');
+    _lastPollAt = Date.now();
+    schedulePoll(false);
+  }
+}, 5000);
 </script>
 
 <!-- MODAL RECURSO BLOQUEADO -->

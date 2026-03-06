@@ -539,7 +539,6 @@ let _fastModeCount  = 0; // quantas rodadas consecutivas vieram com muitas msgs
 function schedulePoll(fast) {
   clearTimeout(_pollTimer);
   _pollTimer = setTimeout(async function() {
-    _lastPollAt = Date.now();
     const before = lastId;
     await fetchMessages();
     const newMsgs = lastId - before;
@@ -1143,7 +1142,6 @@ async function fetchMessages() {
     const res = await fetch(apiUrl('chat/messages?room=') + encodeURIComponent(ROOM) + '&last_id=' + lastId);
     if (!res.ok) {
       if (!initialized) document.getElementById('loading').innerHTML = '<div style="color:#ff4757;font-size:12px">Sala não encontrada ou inativa.</div>';
-      schedulePoll(false);
       return;
     }
     const data = await res.json();
@@ -1177,7 +1175,7 @@ async function fetchMessages() {
       scrollToBottom(false);
       processPendingMsgs();
     }
-  } catch(e) { console.warn('Poll error:', e); schedulePoll(false); }
+  } catch(e) { console.warn('Poll error:', e); }
 }
 
 // Processa fila de mensagens pendentes com typing entre elas
@@ -1349,15 +1347,6 @@ fetch(apiUrl('chat/track'), {
 
 schedulePoll(false);
 setInterval(fetchReactions, REACT_POLL_MS);
-// Watchdog — reinicia o polling se travar por mais de 15s
-let _lastPollAt = Date.now();
-setInterval(function() {
-  if (Date.now() - _lastPollAt > 15000) {
-    console.warn('Watchdog: polling travado, reiniciando...');
-    schedulePoll(false);
-  }
-}, 5000);
-
 </script>
 
 <!-- MODAL RECURSO BLOQUEADO -->

@@ -70,7 +70,6 @@ class ChatEngine {
 
     // ----------------------------------------------------------------
     // getCandidates() — retorna a próxima msg pronta de cada bloco
-    // Otimizado: 2 queries totais independente do número de blocos
     // ----------------------------------------------------------------
     private static function getCandidates(int $roomId, int $now): array {
         $blocks = DB::fetchAll(
@@ -78,45 +77,24 @@ class ChatEngine {
             [$roomId]
         );
 
-        if (empty($blocks)) return [];
+        $candidates = [];
 
-        $blockIds = array_column($blocks, 'id');
-        $in       = implode(',', array_fill(0, count($blockIds), '?'));
+        foreach ($blocks as $block) {
+            $lastInBlock = DB::fetch(
+                'SELECT posted_at FROM timeline_messages
+                 WHERE block_id = ? AND posted_at IS NOT NULL
+                 ORDER BY sequence_order DESC LIMIT 1',
+                [$block['id']]
+            );
 
-        // Query 1: última mensagem postada de cada bloco (1 query total)
-        $lastRows = DB::fetchAll(
-            "SELECT block_id, MAX(posted_at) as posted_at
-             FROM timeline_messages
-             WHERE block_id IN ($in) AND posted_at IS NOT NULL
-             GROUP BY block_id",
-            $blockIds
-        );
-        $lastByBlock = [];
-        foreach ($lastRows as $r) $lastByBlock[$r['block_id']] = $r['posted_at'];
-
-        // Query 2: próxima mensagem não postada de cada bloco (1 query total)
-        $nextRows = DB::fetchAll(
-            "SELECT tm.*, a.name as archetype_name, a.avatar_seed as archetype_seed
-             FROM timeline_messages tm
-             LEFT JOIN archetypes a ON a.id = tm.archetype_id
-             WHERE tm.block_id IN ($in) AND tm.posted_at IS NULL
-             ORDER BY tm.block_id ASC, tm.sequence_order ASC",
-            $blockIds
-        );
-        // Pega apenas a primeira por bloco
-        $nextByBlock = [];
-        foreach ($nextRows as $r) {
-            if (!isset($nextByBlock[$r['block_id']])) {
-                $nextByBlock[$r['block_id']] = $r;
-            }
-        }
-
-        $candidates  = [];
-        $blocksById  = array_column($blocks, null, 'id');
-
-        foreach ($blockIds as $blockId) {
-            $block = $blocksById[$blockId];
-            $next  = $nextByBlock[$blockId] ?? null;
+            $next = DB::fetch(
+                'SELECT tm.*, a.name as archetype_name, a.avatar_seed as archetype_seed
+                 FROM timeline_messages tm
+                 LEFT JOIN archetypes a ON a.id = tm.archetype_id
+                 WHERE tm.block_id = ? AND tm.posted_at IS NULL
+                 ORDER BY tm.sequence_order ASC LIMIT 1',
+                [$block['id']]
+            );
 
             if (!$next) {
                 self::handleBlockEnd($block);
@@ -124,6 +102,7 @@ class ChatEngine {
             }
 
             // Se é uma resposta, verificar se a mensagem original já existe no room_messages
+            // Se não existir, pular esta mensagem — não faz sentido sem contexto
             if (!empty($next['reply_to_id'])) {
                 $originalExists = DB::fetch(
                     'SELECT rm.id FROM room_messages rm
@@ -132,23 +111,24 @@ class ChatEngine {
                     [$next['reply_to_id'], $roomId]
                 );
                 if (!$originalExists) {
+                    // Pula essa mensagem — marca como postada para não travar o bloco
                     DB::query('UPDATE timeline_messages SET posted_at = NOW() WHERE id = ?', [$next['id']]);
                     continue;
                 }
             }
 
-            $lastPostedAt = $lastByBlock[$blockId] ?? null;
-
-            if ($lastPostedAt) {
+            if ($lastInBlock) {
                 $blockDelay = (int)$next['delay_after_prev'];
 
                 if (!empty($next['reply_to_id'])) {
+                    // Respostas entram rápido
                     $blockDelay = rand(30, 90);
                 } elseif (!empty($block['is_tips_block'])) {
+                    // Bloco de dicas: intervalo maior e aleatório
                     $blockDelay = rand(60, 180);
                 }
 
-                $readyAt = strtotime($lastPostedAt) + $blockDelay;
+                $readyAt = strtotime($lastInBlock['posted_at']) + $blockDelay;
             } else {
                 $readyAt = $now;
             }
@@ -436,6 +416,11 @@ class ChatEngine {
 
     public static function getRoomStats(int $roomId): array {
         $totalMessages = DB::fetch('SELECT COUNT(*) as total FROM room_messages WHERE room_id = ?', [$roomId]);
+        $onlineUsers   = DB::fetch(
+            'SELECT COUNT(DISTINCT display_name) as total FROM room_messages
+             WHERE room_id = ? AND posted_at >= DATE_SUB(NOW(), INTERVAL 10 MINUTE)',
+            [$roomId]
+        );
         $activeBlocks  = DB::fetch(
             "SELECT COUNT(*) as c FROM blocks WHERE room_id = ? AND status = 'running'",
             [$roomId]
