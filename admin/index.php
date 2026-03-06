@@ -1012,7 +1012,7 @@ let allRooms       = [];
 async function api(path, method = 'GET', body = null) {
   const opts = {
     method,
-    headers: { 'Content-Type': 'application/json', 'X-Admin-Token': localStorage.getItem('admin_token') || '' }
+    headers: { 'Content-Type': 'application/json', 'X-Admin-Token': (localStorage.getItem('admin_token') || '').replace(/[^\x00-\x7F]/g, '') }
   };
   if (body !== null) opts.body = JSON.stringify(body);
   // Suporte a servidores sem mod_rewrite
