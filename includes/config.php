@@ -1,7 +1,8 @@
 <?php
 // ============================================================
 // config.php — Social Proof Engine
-// Suporta MySQL e SQLite — alterne via DB_USE_SQLITE abaixo
+// Versão final unificada
+// Suporta: InfinityFree, Hostgator, localhost (Android/aWebServer)
 // ============================================================
 
 define('APP_VERSION', '2.0.0');
@@ -10,28 +11,21 @@ define('CLAUDE_MODEL', 'claude-opus-4-5');
 date_default_timezone_set('America/Sao_Paulo');
 
 // ============================================================
-// MOTOR DE BANCO DE DADOS
-// true  = SQLite (sem servidor, arquivo local — ideal para
-//         hosts sem MySQL como SmarterASP, shared gratuitos)
-// false = MySQL (localhost, InfinityFree, Hostgator, etc.)
+// BANCO DE DADOS
+// Prioridade: variável de ambiente > valor fixo abaixo
+// Para InfinityFree: DB_HOST = sql102.infinityfree.com
+// Para Hostgator/localhost: DB_HOST = localhost
 // ============================================================
-define('DB_USE_SQLITE', false);
+define('DB_HOST', getenv('DB_HOST') ?: 'localhost');
+define('DB_PORT', getenv('DB_PORT') ?: '3306');
+define('DB_NAME', getenv('DB_NAME') ?: 'socialproof3');
+define('DB_USER', getenv('DB_USER') ?: 'root');
+define('DB_PASS', getenv('DB_PASS') ?: '');
 
 // ============================================================
-// CONFIGURAÇÕES MySQL (usado quando DB_USE_SQLITE = false)
-// ============================================================
-define('DB_HOST', getenv('DB_HOST') ?: '91j0qi.h.filess.io');
-define('DB_NAME', getenv('DB_NAME') ?: 'Db_SocialProof_partlygone');
-define('DB_USER', getenv('DB_USER') ?: 'Db_SocialProof_partlygone');
-define('DB_PASS', getenv('DB_PASS') ?: '3d1c730e00a2e917943ab2f1d6814a2b2d75cd4a');
-
-// ============================================================
-// CONFIGURAÇÕES SQLite (usado quando DB_USE_SQLITE = true)
-// ============================================================
-define('DB_SQLITE_PATH', __DIR__ . '/../database/socialproof.db');
-
-// ============================================================
-// Database — Singleton PDO (MySQL + SQLite transparente)
+// Database — Singleton PDO
+// Métodos: conn(), fetch(), fetchAll(), insert(), query()
+// query() = alias de execute() para compatibilidade total
 // ============================================================
 class DB {
     private static $instance = null;
@@ -39,37 +33,22 @@ class DB {
     public static function conn(): PDO {
         if (self::$instance === null) {
             try {
-                if (DB_USE_SQLITE) {
-                    $dir = dirname(DB_SQLITE_PATH);
-                    if (!is_dir($dir)) mkdir($dir, 0755, true);
-
-                    self::$instance = new PDO('sqlite:' . DB_SQLITE_PATH, null, null, [
+                self::$instance = new PDO(
+                    'mysql:host=' . DB_HOST . ';port=' . DB_PORT . ';dbname=' . DB_NAME . ';charset=utf8mb4',
+                    DB_USER,
+                    DB_PASS,
+                    [
                         PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
                         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                    ]);
-
-                    self::$instance->exec('PRAGMA foreign_keys = ON');
-                    self::$instance->exec('PRAGMA journal_mode = WAL');
-
-                } else {
-                    self::$instance = new PDO(
-                        'mysql:host=' . DB_HOST . ';port=61032;dbname=' . DB_NAME . ';charset=utf8mb4',
-                        DB_USER,
-                        DB_PASS,
-                        [
-                            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-                            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                            PDO::ATTR_EMULATE_PREPARES   => false,
-                        ]
-                    );
-                }
+                        PDO::ATTR_EMULATE_PREPARES   => false,
+                    ]
+                );
             } catch (PDOException $e) {
                 http_response_code(500);
                 header('Content-Type: application/json; charset=utf-8');
                 die(json_encode([
                     'error'   => 'Database connection failed',
                     'details' => $e->getMessage(),
-                    'driver'  => DB_USE_SQLITE ? 'sqlite' : 'mysql',
                 ], JSON_UNESCAPED_UNICODE));
             }
         }
@@ -77,53 +56,27 @@ class DB {
     }
 
     public static function fetch(string $sql, array $params = []): ?array {
-        $sql  = self::adaptSql($sql);
         $stmt = self::conn()->prepare($sql);
         $stmt->execute($params);
         return $stmt->fetch() ?: null;
     }
 
     public static function fetchAll(string $sql, array $params = []): array {
-        $sql  = self::adaptSql($sql);
         $stmt = self::conn()->prepare($sql);
         $stmt->execute($params);
         return $stmt->fetchAll();
     }
 
     public static function insert(string $sql, array $params = []): string {
-        $sql  = self::adaptSql($sql);
         $stmt = self::conn()->prepare($sql);
         $stmt->execute($params);
         return self::conn()->lastInsertId();
     }
 
+    // query() executa UPDATE/DELETE/INSERT sem retorno de ID
     public static function query(string $sql, array $params = []): bool {
-        $sql  = self::adaptSql($sql);
         $stmt = self::conn()->prepare($sql);
         return $stmt->execute($params);
-    }
-
-    private static function adaptSql(string $sql): string {
-        if (!DB_USE_SQLITE) return $sql;
-
-        $sql = preg_replace('/\bNOW\(\)/i', "datetime('now')", $sql);
-        $sql = preg_replace_callback(
-            '/DATE_SUB\s*\(\s*NOW\(\)\s*,\s*INTERVAL\s+(\d+)\s+MINUTE\s*\)/i',
-            fn($m) => "datetime('now', '-{$m[1]} minutes')",
-            $sql
-        );
-        $sql = preg_replace_callback(
-            '/DATE_SUB\s*\(\s*NOW\(\)\s*,\s*INTERVAL\s+(\d+)\s+HOUR\s*\)/i',
-            fn($m) => "datetime('now', '-{$m[1]} hours')",
-            $sql
-        );
-        $sql = preg_replace('/INSERT INTO(.+?)ON DUPLICATE KEY UPDATE.+/is', 'INSERT OR REPLACE INTO$1', $sql);
-        $sql = str_replace('`', '', $sql);
-        $sql = preg_replace('/ORDER BY RAND\(\)/i', 'ORDER BY RANDOM()', $sql);
-        $sql = preg_replace('/SELECT GET_LOCK\(.+?\)/i', 'SELECT 1 as locked', $sql);
-        $sql = preg_replace('/SELECT RELEASE_LOCK\(.+?\)/i', 'SELECT 1', $sql);
-
-        return $sql;
     }
 }
 
@@ -131,32 +84,31 @@ class DB {
 // Helpers globais
 // ============================================================
 
+/**
+ * Lê uma configuração do banco (tabela settings)
+ */
 function getSetting(string $key): string {
     try {
-        $col = DB_USE_SQLITE ? 'value' : '`value`';
-        $tbl = DB_USE_SQLITE ? 'settings' : '`settings`';
-        $k   = DB_USE_SQLITE ? 'key' : '`key`';
-        $row = DB::fetch("SELECT $col FROM $tbl WHERE $k = ?", [$key]);
+        $row = DB::fetch('SELECT `value` FROM settings WHERE `key` = ?', [$key]);
         return $row ? (string)$row['value'] : '';
     } catch (Exception $e) {
         return '';
     }
 }
 
+/**
+ * Grava uma configuração no banco (upsert)
+ */
 function setSetting(string $key, string $value): void {
-    if (DB_USE_SQLITE) {
-        DB::query(
-            "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))",
-            [$key, $value]
-        );
-    } else {
-        DB::query(
-            'INSERT INTO settings (`key`, `value`) VALUES (?,?) ON DUPLICATE KEY UPDATE `value`=?, updated_at=NOW()',
-            [$key, $value, $value]
-        );
-    }
+    DB::query(
+        'INSERT INTO settings (`key`, `value`) VALUES (?,?) ON DUPLICATE KEY UPDATE `value`=?, updated_at=NOW()',
+        [$key, $value, $value]
+    );
 }
 
+/**
+ * Envia JSON e encerra execução
+ */
 function jsonResponse(array $data, int $code = 200): void {
     http_response_code($code);
     header('Content-Type: application/json; charset=utf-8');
@@ -165,6 +117,9 @@ function jsonResponse(array $data, int $code = 200): void {
     exit;
 }
 
+/**
+ * Gera slug a partir de texto (suporte a acentos PT-BR)
+ */
 function generateSlug(string $text): string {
     $text = mb_strtolower($text, 'UTF-8');
     $from = ['á','à','ã','â','ä','é','è','ê','ë','í','ì','î','ï','ó','ò','õ','ô','ö','ú','ù','û','ü','ç','ñ'];
@@ -175,6 +130,9 @@ function generateSlug(string $text): string {
     return trim($text, '-');
 }
 
+/**
+ * Gera URL de avatar DiceBear a partir de seed
+ */
 function avatarUrl(string $seed): string {
     return 'https://api.dicebear.com/7.x/avataaars/svg?seed=' . urlencode($seed)
          . '&backgroundColor=b6e3f4,c0aede,d1d4f9,ffd5dc,ffdfbf';
